@@ -12,6 +12,8 @@ libc = "0.2.42"
 rand = "0.5.3"
 volatile = "0.2.4"
 core_affinity = "0.5.9"
+thread-priority = "0.1.0"
+clap = "2.32.0"
 
 [build-dependencies]
 bindgen = "0.37"

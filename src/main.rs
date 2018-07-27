@@ -9,15 +9,22 @@
 
 mod symbol;
 mod cbindings;
+mod attack;
 mod flush_reload;
+mod histogram;
 
 use raw_cpuid::CpuId;
 use std::error::Error;
 
 use self::symbol::*;
 use self::flush_reload::*;
+use self::attack::*;
+use self::histogram::*;
+
 use std::collections::BTreeMap;
-use std::ptr::NonNull;
+use std::{thread, time};
+use clap::*;
+use std::result::Result;
 
 fn get_cache_info() -> Result<(), Box<dyn Error>> {
     let cpuid = CpuId::new();
@@ -55,56 +62,102 @@ fn get_cache_info() -> Result<(), Box<dyn Error>> {
 
 
 fn main() -> Result<(), i32> {
-    let args: Vec<String> = ::std::env::args().collect();
 
-    if args.len() < 5 {
-        eprintln!("Usage: pulsar <binary> <threshold> <timeout> monitors");
-        return Err(-1);
-    }
+    let attack_arg = Arg::with_name("attack")
+                        .help("Type of attack")
+                        .possible_values(&["ff", "fr"])
+                        .required(true);
 
-    get_cache_info().expect("get cache failed");
+    let claps = App::new("Pulsar")
+                        // .author("Kamyar Moh <kammoh@gmail.com>")
+                        .about("A Cache Side Channel Attack Framework")
+                        .subcommand(SubCommand::with_name("attack")
+                                                .about("Run attack")
+                                                .arg(attack_arg.clone())
+                                                .args_from_usage("
+                                                        <binary>
+                                                        <threshold>
+                                                        <timeout>
+                                                        [delay] 'wait (secs) before start'")
+                                                .arg(Arg::with_name("monitors")
+                                                    .multiple(true)
+                                                    .last(true)))
+                        .subcommand(SubCommand::with_name("hist")
+                                                .about("Run histogram")
+                                                .arg(attack_arg.clone()))
+                        .get_matches();
 
-    let file_name = &args[1];
-    let threshold = args[2].parse::<u64>().unwrap();
-    let timeout = args[3].parse::<u64>().unwrap();
-    
-    let monitor_names = &args[4..]; // vec!["mpih-mul.c:90", "mpihelp_divrem", "mpih-mul.c:270"];
-    
-    let mut monitors = Vec::new();
 
 
 
-    for mn in monitor_names {
-        let r = get_symbol_offset(file_name, mn).unwrap();
-
-        let addr = map_offset(file_name, r.clone());
-
-        eprintln!("{} {:X} {:?}", mn, r, addr);
-        monitors.push(Monitor{addr, hit_ts: Vec::with_capacity(2048)});
-    }
-
-    
-    
-
-    fr(&mut monitors, threshold, timeout);
-
-    let mut map = BTreeMap::new();
-
-    for (idx, m) in monitors.iter().enumerate() {
-        eprintln!("monitor {} samples: {}", idx, m.hit_ts.len());
-        for hit_ts in m.hit_ts.iter() {
-            map.insert(hit_ts, idx);
+    match claps.subcommand() {
+        ("cache-info", Some(claps)) => {
+            get_cache_info().or(Err(-1))
         }
-    }
+        ("attack", Some(claps)) => {
 
-    if map.len() > 1 {
-        let (init_ts, _) = map.iter().nth(0).unwrap();
+            let attack = match claps.value_of("attack") {
+                Some("ff") => {Attack::FlushFlush}
+                Some("fr") => {Attack::FlushReload}
+                _ => {panic!("unknown attack")}
+            };
 
-        for (ts, mon) in map.iter() {
-            println!("{}, {}", *ts - *init_ts, mon);
+            let file_name = value_t_or_exit!(claps, "binary", String);
+            let threshold = value_t_or_exit!(claps, "threshold", u64);
+            let timeout = value_t_or_exit!(claps, "timeout", u64);
+            let delayed = value_t!(claps, "delay", u64).unwrap_or(0);
+            let monitor_names = values_t_or_exit!(claps, "monitors", String);
+            
+            let mut monitors = Vec::new();
+
+            for mn in monitor_names {
+                let r = get_symbol_offset(&file_name, &mn).unwrap();
+
+                let addr = map_offset(&file_name, r.clone());
+
+                eprintln!("{} {:X} {:?}", mn, r, addr);
+                monitors.push(Monitor{addr, hit_ts: Vec::with_capacity(2048)});
+            }
+
+            for i in 0..delayed {
+                eprintln!("{}...", delayed - i);
+                thread::sleep(time::Duration::from_secs(1));
+            }
+
+            histogram_monitor(&mut monitors, attack, threshold, true);
+
+            // run_attack(&mut monitors, attack, threshold, timeout);
+
+            let mut map = BTreeMap::new();
+
+            for (idx, m) in monitors.iter().enumerate() {
+                eprintln!("monitor {} samples: {}", idx, m.hit_ts.len());
+                for hit_ts in m.hit_ts.iter() {
+                    map.insert(hit_ts, idx);
+                }
+            }
+
+            if map.len() > 1 {
+                let (init_ts, _) = map.iter().nth(0).unwrap();
+
+                for (ts, mon) in map.iter() {
+                    println!("{}, {}", *ts - *init_ts, mon);
+                }
+            }
+            Ok(())
         }
+        ("hist", Some(claps)) => {
+
+            let attack = match claps.value_of("attack") {
+                Some("ff") => {Attack::FlushFlush}
+                Some("fr") => {Attack::FlushReload}
+                _ => {panic!("x unknown attack")}
+            };
+
+            histogram(attack, true);
+            Ok(())
+        }
+        _ => {Err(-1)}
     }
 
-
-    Ok(())
 }

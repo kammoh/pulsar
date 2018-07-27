@@ -25,7 +25,7 @@ pub fn get_symbol_offset(file_name: &str, symbol: &str) -> Result<u64, Box<Error
             Ok(ret)
         // }
     } else {
-        Err(From::from("failed"))
+        Err(From::from(format!("failed to get symbol {} in {}", symbol, file_name) ))
     }
 }
 
