@@ -49,7 +49,8 @@ pub fn rdtscp() -> u64 {
     unsafe {
 
         asm!(
-            "rdtscp\n\t"
+            "mfence
+            rdtscp\n\t"
             : "={rdx}" (d), "={rax}"(a)
             :
             : "rcx"
@@ -83,8 +84,8 @@ pub fn mem_access(p: &u64) {
     unsafe {
         asm!(
              concat!(
-                // "\n\tlfence\n\t",
                 "movq ($0), %rax\n\t",
+                 "\n\tlfence\n\t",
                 // "\n\tcpuid",
                 // "\n\tmfence\n\t"
             )
@@ -103,11 +104,11 @@ pub fn flush(p: &u64) {
 
 
 #[inline]
-pub fn reload_flush(addr: *const u8, time_stamp: &mut u64, delta: &mut u64) {
+pub fn reload_flush(addr: *const u8, time_stamp: &mut u64, delta: &mut i64) {
     unsafe {
         asm!(
             concat!(
-                // "\n\tmfence",
+                "\n\tmfence",
                 "\n\tlfence",
                 "\n\trdtscp",
                 "\n\tshl $$32, %rdx",
@@ -135,24 +136,21 @@ pub fn reload_flush(addr: *const u8, time_stamp: &mut u64, delta: &mut u64) {
     }
 }
 
+
 #[inline]
-pub fn time_clflush(addr: *const u8, ts: &mut u64, delta: &mut u64) {
+pub fn time_clflushx(addr: *const u8, _: *const u8,  ts: &mut u64, delta: &mut i64) {
     unsafe {
         asm!(
             concat!(
-                "\n\tmfence",
+                // "\n\tmfence",
                 "\n\trdtscp",
-                "\n\tlfence",
+                 "\n\tlfence",
                 "\n\tshl $$32, %rdx",
                 "\n\tor  %rdx, %rax",
                 "\n\tmov %rax, %rsi",
                 "\n\tclflush  (%rbx)",
-                "\n\tmfence",
-                "\n\tclflush  (%rbx)",
-                "\n\tmfence",
-                "\n\tclflush  4(%rbx)",
-                "\n\tcpuid",
-                "\n\tlfence",
+//                "\n\tclflush  4(%rbx)",
+//                "\n\tcpuid",
                 "\n\trdtscp",
                 "\n\tlfence",
                 "\n\tshl $$32, %rdx",
@@ -164,6 +162,44 @@ pub fn time_clflush(addr: *const u8, ts: &mut u64, delta: &mut u64) {
             : "={rax}" (*delta) , "={rdx}"(*ts)     /* Outputs $1 = time_stamp */
             : "{rbx}" (addr)           /* Inputs: $2 = addr */
             : "rsi", "rcx"         /* Clobbers */
+            : "volatile"           /* Options  */
+        );
+    }
+}
+
+
+/**
+ * delta = t_flush(target) - t_flush(dummy)
+ */
+#[inline]
+pub fn time_clflush(target: *const u8, dummy: *const u8, ts: &mut u64, delta: &mut i64) {
+    unsafe {
+        asm!(
+            concat!(
+                "\n\trdtsc", // rdtsc (+seq) to preserve rcx ????
+                "\n\tmfence",
+                "\n\tshl $$32, %rdx",
+                "\n\tor  %rdx, %rax",
+                "\n\tclflush (%rcx)",  // flush target <<
+                "\n\tmov %rax, %rcx",  // %rsi=t1
+                "\n\trdtsc",
+                "\n\tmfence",
+                "\n\tshl $$32, %rdx",
+                "\n\tor  %rdx, %rax",
+                "\n\tsub %rax, %rcx",  // %rsi=t1-t2
+                "\n\tsub %rax, %rcx",  // %rsi=(t1-t2)-t2
+                "\n\tclflush (%rbx)",  // flush dummy  <<
+                "\n\tmfence",
+                "\n\trdtsc",
+                "\n\tmfence",
+                "\n\tshl $$32, %rdx",
+                "\n\tor  %rdx, %rax",  // %rax=t3                  (*)
+                "\n\tneg %rcx",
+                "\n\tsub %rax, %rcx",  // %rax=2*t2-t1-t3
+            )
+            : "={rcx}" (*delta) , "={rax}"(*ts)     /* Outputs */
+            : "{rcx}" (&target) , "{rbx}" (&dummy)    /* Inputs */
+            : "rdx"                /* Clobbers */
             : "volatile"           /* Options  */
         );
     }
@@ -195,26 +231,27 @@ pub fn wait_until(end_tsc: u64) {
 
 pub fn run_thread(barrier: Arc<Barrier>, fire_tsc: u64, mut mon: Monitor, attack: Attack, threshold:u64, timeout: u64) -> Monitor {
     let mut ts: u64 = 0;
-    let mut delta: u64 = 0;
+    
     // let max_samples = mon.hit_ts.capacity() - 1;
     let addr = mon.addr;
     let mut end_tsc = fire_tsc + timeout;
 
     // clflush!(addr);
 
-
+    let mut delta: i64 = 0;
 
 
     match attack {
 
         Attack::FlushReload => {
+            
             eprintln!("starting Flush+Reload with threshold={}", threshold);
             // let p = v.as_mut_ptr();
             barrier.wait();
             wait_until(fire_tsc);
             loop {
                 reload_flush(addr, &mut ts, &mut delta);
-                if delta < threshold {
+                if delta < threshold as i64 {
                     end_tsc = ts + timeout;
                     mon.hit_ts.push(ts);
                 }
@@ -230,12 +267,25 @@ pub fn run_thread(barrier: Arc<Barrier>, fire_tsc: u64, mut mon: Monitor, attack
     // }
         }
         Attack::FlushFlush => {
+            let mut rng = rand::thread_rng();
+            let mut dummy_vec = Vec::new();
+
+            for _ in 0..64{
+                dummy_vec.push(rng.gen_range(0,256) as u8);
+            }
+
+
+            clflush!(&dummy_vec[0]);
+
+            let dummy = &mut dummy_vec[rng.gen_range(0, 64)];
+
             eprintln!("starting Flush+Flush with threshold={}", threshold);
             barrier.wait();
             wait_until(fire_tsc);
+
             loop {
-                time_clflush(addr, &mut ts, &mut delta);
-                if delta >= threshold && delta < 500 {
+                time_clflush(addr, dummy, &mut ts, &mut delta);
+                if delta >= (threshold as i64) && delta < 500 {
         
                     end_tsc = ts + timeout;
                     mon.hit_ts.push(ts);

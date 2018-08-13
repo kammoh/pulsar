@@ -7,16 +7,16 @@ authors = ["Kamyar Mohajerani <kammoh@gmail.com>"]
 edition = '2018'
 
 [dependencies]
-raw-cpuid = "4.0"
+raw-cpuid = "5.0.0"
 libc = "0.2.42"
-rand = "0.5.3"
+rand = "0.5.4"
 volatile = "0.2.4"
 core_affinity = "0.5.9"
 thread-priority = "0.1.0"
 clap = "2.32.0"
 
 [build-dependencies]
-bindgen = "0.37"
-cc = "1.0"
+bindgen = "0.37.4"
+cc = "1.0.18"
 
 

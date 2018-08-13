@@ -23,7 +23,7 @@ use self::histogram::*;
 
 use std::collections::BTreeMap;
 use std::{thread, time};
-use clap::*;
+use clap::{App, Arg, SubCommand, value_t, value_t_or_exit, values_t, values_t_or_exit, };
 use std::result::Result;
 
 fn get_cache_info() -> Result<(), Box<dyn Error>> {
@@ -68,7 +68,7 @@ fn main() -> Result<(), i32> {
                         .possible_values(&["ff", "fr"])
                         .required(true);
 
-    let claps = App::new("Pulsar")
+    let mut clap = App::new("Pulsar")
                         // .author("Kamyar Moh <kammoh@gmail.com>")
                         .about("A Cache Side Channel Attack Framework")
                         .subcommand(SubCommand::with_name("attack")
@@ -84,13 +84,12 @@ fn main() -> Result<(), i32> {
                                                     .last(true)))
                         .subcommand(SubCommand::with_name("hist")
                                                 .about("Run histogram")
-                                                .arg(attack_arg.clone()))
-                        .get_matches();
+                                                .arg(attack_arg.clone()));
 
 
 
 
-    match claps.subcommand() {
+    match clap.clone().get_matches().subcommand() {
         ("cache-info", Some(claps)) => {
             get_cache_info().or(Err(-1))
         }
@@ -157,7 +156,10 @@ fn main() -> Result<(), i32> {
             histogram(attack, true);
             Ok(())
         }
-        _ => {Err(-1)}
+        _ => {
+            clap.print_help();
+            Err(-1)
+        }
     }
 
 }
